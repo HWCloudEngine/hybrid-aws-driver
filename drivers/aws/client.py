@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -75,6 +76,7 @@ class AwsClient(object):
 
 
 class AwsClientPlugin(object):
+
     def __init__(self, ec2_client=None, res_client=None, **kwargs):
         self._ec2_client = ec2_client
         self._ec2_resource = res_client
@@ -89,10 +91,11 @@ class AwsClientPlugin(object):
             waiter = self._ec2_client.get_waiter('volume_available')
             waiter.wait(VolumeIds=[vol['VolumeId']])
         except Exception as e:
-            LOG.error(_LE("Aws create volume failed! error_msg: %s"), e.msg)
+            reason = e.response.get('Error', {}).get('Message', 'Unkown')
+            LOG.error(_LE("Aws create volume failed! error_msg: %s"), reason)
             if vol:
                 self.delete_volume(VolumeId=vol['VolumeId'])
-            raise exception_ex.ProviderCreateVolumeFailed(reason=e.msg)
+            raise exception_ex.ProviderCreateVolumeFailed(reason=reason)
         else:
             return vol
 
@@ -102,8 +105,9 @@ class AwsClientPlugin(object):
             waiter = self._ec2_client.get_waiter('volume_deleted')
             waiter.wait(VolumeIds=[kwargs['VolumeId']])
         except Exception as e:
-            LOG.error(_LE("Aws delete volume failed! error_msg: %s"), e.msg)
-            raise exception_ex.ProviderDeleteVolumeFailed(reason=e.msg)
+            reason = e.response.get('Error', {}).get('Message', 'Unkown')
+            LOG.error(_LE("Aws delete volume failed! error_msg: %s"), reason)
+            raise exception_ex.ProviderDeleteVolumeFailed(reason=reason)
 
     def create_snapshot(self, **kwargs):
         snapshot = None
@@ -112,10 +116,11 @@ class AwsClientPlugin(object):
             waiter = self._ec2_client.get_waiter('snapshot_completed')
             waiter.wait(VolumeIds=[snapshot['SnapshotId']])
         except Exception as e:
-            LOG.error(_LE("Aws create snapshot failed! error_msg: %s"), e.msg)
+            reason = e.response.get('Error', {}).get('Message', 'Unkown')
+            LOG.error(_LE("Aws create snapshot failed! error_msg: %s"), reason)
             if snapshot:
                 self.delete_snapshot(SnapshotId=snapshot['SnapshotId'])
-            raise exception_ex.ProviderCreateSnapshotFailed(reason=e.msg)
+            raise exception_ex.ProviderCreateSnapshotFailed(reason=reason)
         else:
             return snapshot
 
@@ -133,8 +138,9 @@ class AwsClientPlugin(object):
         try:
             self._ec2_client.delete_snapshot(**kwargs)
         except Exception as e:
-            LOG.error(_LE("Aws delete snapshot failed! error_msg: %s"), e.msg)
-            raise exception_ex.ProviderDeleteSnapshotFailed(reason=e.msg)
+            reason = e.response.get('Error', {}).get('Message', 'Unkown')
+            LOG.error(_LE("Aws delete snapshot failed! error_msg: %s"), reason)
+            raise exception_ex.ProviderDeleteSnapshotFailed(reason=reason)
 
     def create_instance(self, **kwargs):
         instance_ids = []
