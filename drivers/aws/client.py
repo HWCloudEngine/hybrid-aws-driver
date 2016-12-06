@@ -11,6 +11,8 @@
 #    under the License.
 
 import boto3
+
+from botocore import exceptions
 from jacket.db.extend import api as db_api
 from jacket.drivers.aws import exception_ex
 from jacket.i18n import _LE
@@ -90,11 +92,15 @@ class AwsClientPlugin(object):
             waiter = self._ec2_client.get_waiter('volume_available')
             waiter.wait(VolumeIds=[vol['VolumeId']])
         except Exception as e:
-            reason = e.response.get('Error', {}).get('Message', 'Unkown')
-            LOG.error(_LE("Aws create volume failed! error_msg: %s"), reason)
             if vol:
                 self.delete_volume(VolumeId=vol['VolumeId'])
-            raise exception_ex.ProviderCreateVolumeFailed(reason=reason)
+            if isinstance(e, exceptions.ClientError):
+                reason = e.response.get('Error', {}).get('Message', 'Unkown')
+                LOG.error(_LE("Aws create volume failed! error_msg: %s"),
+                          reason)
+                raise exception_ex.ProviderCreateVolumeFailed(reason=reason)
+            else:
+                raise
         else:
             return vol
 
@@ -104,9 +110,13 @@ class AwsClientPlugin(object):
             waiter = self._ec2_client.get_waiter('volume_deleted')
             waiter.wait(VolumeIds=[kwargs['VolumeId']])
         except Exception as e:
-            reason = e.response.get('Error', {}).get('Message', 'Unkown')
-            LOG.error(_LE("Aws delete volume failed! error_msg: %s"), reason)
-            raise exception_ex.ProviderDeleteVolumeFailed(reason=reason)
+            if isinstance(e, exceptions.ClientError):
+                reason = e.response.get('Error', {}).get('Message', 'Unkown')
+                LOG.error(_LE("Aws delete volume failed! error_msg: %s"),
+                          reason)
+                raise exception_ex.ProviderDeleteVolumeFailed(reason=reason)
+            else:
+                raise
 
     def create_snapshot(self, **kwargs):
         snapshot = None
@@ -115,11 +125,15 @@ class AwsClientPlugin(object):
             waiter = self._ec2_client.get_waiter('snapshot_completed')
             waiter.wait(VolumeIds=[snapshot['SnapshotId']])
         except Exception as e:
-            reason = e.response.get('Error', {}).get('Message', 'Unkown')
-            LOG.error(_LE("Aws create snapshot failed! error_msg: %s"), reason)
             if snapshot:
                 self.delete_snapshot(SnapshotId=snapshot['SnapshotId'])
-            raise exception_ex.ProviderCreateSnapshotFailed(reason=reason)
+            if isinstance(e, exceptions.ClientError):
+                reason = e.response.get('Error', {}).get('Message', 'Unkown')
+                LOG.error(_LE("Aws create snapshot failed! error_msg: %s"),
+                          reason)
+                raise exception_ex.ProviderCreateSnapshotFailed(reason=reason)
+            else:
+                raise
         else:
             return snapshot
 
@@ -137,9 +151,13 @@ class AwsClientPlugin(object):
         try:
             self._ec2_client.delete_snapshot(**kwargs)
         except Exception as e:
-            reason = e.response.get('Error', {}).get('Message', 'Unkown')
-            LOG.error(_LE("Aws delete snapshot failed! error_msg: %s"), reason)
-            raise exception_ex.ProviderDeleteSnapshotFailed(reason=reason)
+            if isinstance(e, exceptions.ClientError):
+                reason = e.response.get('Error', {}).get('Message', 'Unkown')
+                LOG.error(_LE("Aws delete snapshot failed! error_msg: %s"),
+                          reason)
+                raise exception_ex.ProviderDeleteSnapshotFailed(reason=reason)
+            else:
+                raise
 
     def create_instance(self, **kwargs):
         instance_ids = []

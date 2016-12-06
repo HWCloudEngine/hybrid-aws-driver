@@ -159,9 +159,9 @@ class BaseDriver(object):
                 Tags=tags
             )
         except Exception as ex:
-            LOG.error(_LE("create provider volume failed! os_id:%(os_id)s,"
+            LOG.error(_LE("create provider snapshot failed! os_id:%(os_id)s,"
                           " ex = %(ex)s"), {'os_id': os_id, 'ex': ex})
-            msg = (_("create provider volume failed os_id:%s") % os_id)
+            msg = (_("create provider snapshot failed os_id:%s") % os_id)
             raise cinder_ex.VolumeBackendAPIException(data=msg)
         return provider_snap
 
@@ -289,7 +289,7 @@ class AwsVolumeDriver(BaseDriver, driver.VolumeDriver):
         try:
             vol_id = self._get_provider_volume_id(context, volume)
             if not vol_id:
-                volumes = self._get_provider_volume(volume.id)
+                volumes = self._get_provider_volume(context, volume.id)
                 # if len(volumes) > 1,there must have been an error,we should
                 # delete all volumes
                 for vol in volumes:
@@ -330,7 +330,8 @@ class AwsVolumeDriver(BaseDriver, driver.VolumeDriver):
         context = req_context.RequestContext(is_admin=True,
                                              project_id=volume.project_id)
         try:
-            provider_snap = self._get_provider_snapshot_id(context, snapshot)
+            provider_snap = self._get_provider_snapshot_id(context,
+                                                           snapshot.id)
             vol = self._create_volume(volume, context, snapshot=provider_snap)
         except Exception as ex:
             LOG.error(_LE('create_volume_from_snapshot failed,'
@@ -387,7 +388,7 @@ class AwsVolumeDriver(BaseDriver, driver.VolumeDriver):
             msg = (_("create_snapshot failed! snapshot:%s") % snapshot.id)
             raise cinder_ex.VolumeBackendAPIException(data=msg)
 
-        LOG.info(_LI("create snapshot(%(id)s) success!"), snapshot.id)
+        LOG.info(_LI("create snapshot:%s success!"), snapshot.id)
 
     def delete_snapshot(self, snapshot):
         """Delete a snapshot."""
