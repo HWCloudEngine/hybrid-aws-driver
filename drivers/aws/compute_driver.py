@@ -33,7 +33,8 @@ from oslo_serialization import jsonutils
 from oslo_utils import excutils
 import re
 import string
-
+import traceback
+import uuid
 
 LOG = logging.getLogger(__name__)
 CONF = conf.CONF
@@ -123,7 +124,104 @@ class AwsComputeDriver(driver.ComputeDriver):
         pass
 
     def volume_create(self, context, instance, image_id=None, size=None):
-        pass
+        '''Create volume for lxc in image sys or creating hybridcontainer '''
+
+        # 1. volume size check
+        root_size = instance.get_flavor().get('root_gb', None)
+        vol_size = size or root_size
+
+        if not vol_size:
+            _msg = "volume size input is None."
+            raise exception_ex.ProviderCreateVolumeFailed(reason=_msg)
+
+        kwargs = {}
+        kwargs['Size'] = vol_size
+        # 2. available zone from configure file or BD
+        # if change from parameter, here should modify.
+        try:
+            project_mapper = \
+                self._get_project_mapper(context, context.project_id)
+        except exception_ex.AccountNotConfig:
+            LOG.warn(_LE("Get project mapper failed in db."))
+            project_mapper = None
+
+        if not project_mapper:
+            az = CONF.availability_zone or None
+        else:
+            az = project_mapper.get('availability_zone', None)
+        if not az:
+            LOG.error(_LE("Create volume error: availability zone is none."))
+            raise exception_ex.AvailabilityZoneNotFountError
+        kwargs['AvailabilityZone'] = az
+
+        # volume id for caa
+        volume_id = str(uuid.uuid4())
+        provider_snapshot_id = None
+        # if image id is not None and image id is base vm
+        if image_id and image_id == "base":
+            # get base vm image id in aws
+            try:
+                provider_image_id = \
+                    self._get_provider_base_image_id(context, image_id)
+                # get base vm image snapshot id in aws
+                kwargs = {'ImageIds': [provider_image_id]}
+                images = self.aws_client.get_aws_client(context)\
+                                        .describe_images(**kwargs)
+                image = images[0]
+                block_device_mappings = image.get('BlockDeviceMappings')
+                for bdm in block_device_mappings:
+                    device_name = bdm.get('DeviceName')
+                    if device_name == '/dev/sda1' or \
+                       device_name == '/dev/xvda':
+                        provider_snapshot_id = \
+                            bdm.get('Ebs', {})['SnapshotId']
+                        break
+            except Exception as e:
+                LOG.error(_LE('Query basevm image %(i)s in aws error: %(e)s'),
+                          {'i': image_id, 'e': e})
+                raise exception.ImageNotFound(image_id=image_id)
+        elif image_id:
+            provider_snapshot_id = \
+                self._get_provider_image_id(context, image_id)
+        else:
+            provider_snapshot_id = None
+
+        if provider_snapshot_id:
+            kwargs['SnapshotId'] = provider_snapshot_id
+
+        # 3. create volume
+        volume = None
+        try:
+            # 3.1 create volume
+            aws_client = self.aws_client.get_aws_client(context)
+            volume = aws_client.create_volume(**kwargs)
+            # 3.2. create volume tag
+            tags = [{'Key': 'caa_volume_id', 'Value': volume_id}]
+            aws_client.create_tags(Resources=[volume['VolumeId']],
+                                   Tags=tags)
+        except Exception as e:
+            _msg = "Aws create volume error: %s" % traceback.format_exc(e)
+            if volume:
+                LOG.error(_msg)
+                self.aws_client.get_aws_client(context)\
+                               .delete_volume(VolumeId=volume['VolumeId'])
+            raise exception_ex.ProviderCreateVolumeFailed(reason=_msg)
+
+        # 4. create volume mapper
+        try:
+            values = {'provider_volume_id': volume['VolumeId']}
+            self.caa_db_api.volume_mapper_create(context, volume_id,
+                                                 context.project_id,
+                                                 values)
+        except Exception as ex:
+            _msg = (_LE("volume_mapper_create failed! vol: %(id)s,ex: %(ex)s"),
+                    {'id': volume['VolumeId'], 'ex': ex})
+            LOG.error(_msg)
+            aws_client = self.aws_client.get_aws_client(context)
+            aws_client.delete_volume(VolumeId=volume['VolumeId'])
+            raise exception_ex.ProviderCreateVolumeFailed(reason=_msg)
+
+        return volume_id
 
     def volume_delete(self, context, instance, volume_id):
         """Delete specified volume."""
@@ -779,7 +877,57 @@ class AwsComputeDriver(driver.ComputeDriver):
         pass
 
     def upload_image(self, context, instance, image_meta):
-        pass
+        '''Upload image to aws in image sys. Here create snapshot '''
+
+        # 1. Get lxc volume
+        image_id = image_meta['id']
+        lxc_volume_id = \
+            instance.system_metadata.get('lxc_volume_id', None)
+        if not lxc_volume_id:
+            raise exception.LxcVolumeNotFound(instance_uuid=instance.uuid)
+
+        # 2. Create volume snapshot
+        snapshot = None
+        kargs = {}
+
+        try:
+            kargs['VolumeId'] = lxc_volume_id
+            # 2.1 create snapshot
+            aws_client = self.aws_client.get_aws_client(context)
+            snapshot = aws_client.create_snapshot(**kargs)
+
+            # 2.2 create snapshot tag
+            tags = [{'Key': 'caa_snapshot_id', 'Value': image_id}]
+            aws_client.create_tags(Resources=[snapshot['SnapshotId']],
+                                   Tags=tags)
+        except Exception as e:
+            _msg = "Upload image to aws error: %s" % traceback.format_exc(e)
+            LOG.error(_msg)
+            if snapshot:
+                args = {}
+                args['SnapshotId'] = snapshot['SnapshotId']
+                self.aws_client.get_aws_client(context)\
+                               .delete_snapshot(**args)
+            raise exception_ex.ProviderCreateSnapshotFailed(reason=_msg)
+
+        # 3. Create baseVM image relation with this snapshot
+        if snapshot:
+            try:
+                values = {'provider_image_id': snapshot.get('SnapshotId')}
+                self.caa_db_api.image_mapper_create(context, image_id,
+                                                    context.project_id,
+                                                    values)
+            except Exception as e:
+                LOG.error(_LE("Create image mapper error: %s"),
+                          traceback.format_exc(e))
+                with excutils.save_and_reraise_exception():
+                    args = {}
+                    args['SnapshotId'] = snapshot['SnapshotId']
+                    aws_client = self.aws_client.get_aws_client(context)
+                    aws_client.delete_snapshot(**args)
+        else:
+            _msg = _("Upload image to aws error: snapshot is None.")
+            raise exception_ex.ProviderCreateSnapshotFailed(reason=_msg)
 
     def _get_provider_instance_id(self, context, caa_instance_id):
         instance_mapper = self.caa_db_api.instance_mapper_get(context,
@@ -834,7 +982,8 @@ class AwsComputeDriver(driver.ComputeDriver):
 
     def _get_project_mapper(self, context, project_id=None):
         if project_id is None:
-            project_id = 'default'
+            project_id = 'aws_default'
+
         project_mapper = self.caa_db_api.project_mapper_get(context,
                                                             project_id)
         if not project_mapper:
@@ -871,13 +1020,13 @@ class AwsComputeDriver(driver.ComputeDriver):
                 device_name = bdm.get('DeviceName')
                 if device_name == '/dev/sda1' or device_name == '/dev/xvda':
                     bdm.get('Ebs', {})['VolumeSize'] = root_size
+                    break
             sub_bdms.extend(block_device_mappings)
             return sub_bdms
         except botocore.exceptions.ClientError as e:
             reason = e.response.get('Error', {}).get('Message', 'Unkown')
             LOG.error(_LE('Error from create instance. '
                           'Error=%(error)s'), {'error': reason})
-            LOG.error('Power on instance failed, the error is: %s' % reason)
             raise exception_ex.ProviderCreateInstanceFailed(reason=reason)
         except Exception as e:
             with excutils.save_and_reraise_exception():

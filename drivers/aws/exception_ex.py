@@ -50,5 +50,17 @@ class OsAwsConnectFailed(JacketException):
     msg_fmt = _("connect aws failed!")
 
 
+class AvailabilityZoneNotFountError(JacketException):
+    msg_fmt = _("can not get availability zone.")
+
+
+class VolumeTypeNotFountError(JacketException):
+    msg_fmt = _("can not find volume type %(type_id)s in jacket db.")
+
+
+class ProviderImageNotFount(JacketException):
+    msg_fmt = _("Provider delete volume failed,error msg: %(reason)s")
+
+
 class AttachVolumeFailed(JacketException):
     msg_fmt = _("Attach volume on provider cloud failed")

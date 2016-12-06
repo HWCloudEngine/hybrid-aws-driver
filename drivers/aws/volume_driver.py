@@ -16,17 +16,18 @@
 Volume Drivers for Amazon EC2 Block Storage
 """
 
-from oslo_log import log as logging
-
 from jacket import conf
 from jacket import context as req_context
 from jacket.db.extend import api as caa_db_api
 from jacket.drivers.aws import client
+from jacket.drivers.aws import exception_ex
 from jacket import exception
 from jacket.i18n import _LE, _LI, _
 from jacket.storage.backup.driver import BackupDriver
 from jacket.storage import exception as cinder_ex
 from jacket.storage.volume import driver
+from oslo_log import log as logging
+import traceback
 
 LOG = logging.getLogger(__name__)
 
@@ -213,7 +214,82 @@ class AwsVolumeDriver(BaseDriver, driver.VolumeDriver):
         return
 
     def copy_image_to_volume(self, context, volume, image_service, image_id):
-        LOG.debug('dir volume: %s' % dir(volume))
+        '''Create volume from image'''
+
+        # 1. Build creating volume parameters(size,type,az.eg)
+        # from inputing volume
+        kargs = {}
+        kargs['Size'] = volume.size
+        volume_type_id = volume.volume_type_id
+        if volume_type_id:
+            try:
+                type_name = self._get_provider_type_name(context,
+                                                         volume_type_id)
+                kargs['VolumeType'] = type_name
+            except Exception:
+                raise
+        # availability zone from db
+        provider_az = None
+        try:
+            provider_az = self._get_provider_az(context,
+                                                volume.availability_zone)
+        except exception_ex.AccountNotConfig:
+            LOG.warn(_LE("Get project mapper failed in db."))
+            raise exception_ex.AvailabilityZoneNotFountError
+
+        if not provider_az:
+            LOG.error(_LE("Create volume error: availability zone is none."))
+            raise exception_ex.AvailabilityZoneNotFountError
+
+        kargs['AvailabilityZone'] = provider_az
+
+        # 2. Get snapshot id by image_id
+        try:
+            snapshot = self.caa_db_api.image_mapper_get(context,
+                                                        image_id,
+                                                        context.project_id)
+            snapshot_id = snapshot.get('provider_image_id', None)
+        except Exception as e:
+            _msg = "Can not find provider image in jacket db: %s" % \
+                traceback.format_exc(e)
+            raise exception_ex.ProviderImageNotFount(reason=_msg)
+        if not snapshot_id:
+            _msg = "Can not find provider image in jacket db"
+            raise exception_ex.ProviderImageNotFount(reason=_msg)
+
+        kargs['SnapshotId'] = snapshot_id
+
+        # 3. Create volume by snapshot and volume parameters
+        provider_volume = None
+        try:
+            aws_client = self._aws_client.get_aws_client(context)
+            provider_volume = aws_client.create_volume(**kargs)
+            tags = [{'Key': 'caa_volume_id', 'Value': volume.id}]
+            aws_client.create_tags(Resources=[provider_volume['VolumeId']],
+                                   Tags=tags)
+        except Exception as e:
+            _msg = "Aws create volume from image(snapshot) error: %s" % \
+                traceback.format_exc(e)
+            if provider_volume:
+                args = {}
+                args['VolumeId'] = provider_volume['VolumeId']
+                self._aws_client.get_aws_client(context)\
+                                .delete_volume(**args)
+            raise exception_ex.ProviderCreateVolumeFailed(reason=_msg)
+
+        # 4. create volume mapper
+        try:
+            values = {"provider_volume_id": provider_volume['VolumeId']}
+            self.caa_db_api.volume_mapper_create(context, volume.id,
+                                                 context.project_id, values)
+        except Exception as e:
+            _msg = 'Create volume mapper error: %s' % traceback.format_exc(e)
+            LOG.exception(_msg)
+            args = {}
+            args['VolumeId'] = provider_volume['VolumeId']
+            aws_client = self._aws_client.get_aws_client(context)
+            provider_volume = aws_client.delete_volume(**args)
+            raise exception_ex.ProviderCreateVolumeFailed(reason=_msg)
 
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
         pass

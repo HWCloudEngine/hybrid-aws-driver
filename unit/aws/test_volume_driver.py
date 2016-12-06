@@ -11,9 +11,11 @@
 #    under the License.
 
 import boto3
+from botocore.exceptions import ClientError
 import mock
 import testtools
 
+import jacket
 from jacket import context
 from jacket.drivers.aws.client import AwsClientPlugin
 from jacket.drivers.aws import exception_ex
@@ -51,6 +53,9 @@ class TestAwsVolumeDriver(testtools.TestCase):
         setattr(self.snapshot, 'volume', self.volume)
         self._fake_ebs = {'VolumeId': 'fake'}
         self._fake_snap = {'SnapshotId': 'fake'}
+
+    def _create_volume(self, params=None):
+        return fake_volume.fake_volume_obj(self.ctx)
 
     @mock.patch.object(BaseDriver, '_get_provider_type_name',
                        mock.MagicMock(return_value='fake'))
@@ -434,3 +439,160 @@ class TestAwsVolumeDriver(testtools.TestCase):
             SnapshotId=self._fake_snap['SnapshotId']
         )
         mock_delete_vol.assert_called_once_with(VolumeId='fake')
+
+    @mock.patch.object(BaseDriver, "_get_provider_type_name")
+    def test_copy_image_to_volume_not_exist_volume_type(self, get_type_mock):
+        '''Test copy_image_to_volume in compute_driver
+
+            for volume type not finding in jacket db
+        '''
+
+        get_type_mock.side_effect = exception_ex.VolumeTypeNotFountError
+        volume = self._create_volume()
+        volume.volume_type_id = "fake-type"
+        self.assertRaises(exception_ex.VolumeTypeNotFountError,
+                          self.driver.copy_image_to_volume,
+                          self.ctx,
+                          volume,
+                          '',
+                          '')
+
+    @mock.patch.object(BaseDriver, "_get_provider_type_name",
+                       mock.MagicMock(return_value='standard'))
+    @mock.patch.object(BaseDriver, "_get_provider_az")
+    def test_copy_image_to_volume_not_exist_availability(self,
+                                                         get_rovider_az_mock):
+        '''Test copy_image_to_volume in compute_driver
+
+            for availability zone not finding
+        '''
+
+        get_rovider_az_mock.return_value = None
+        volume = self._create_volume()
+        self.assertRaises(exception_ex.AvailabilityZoneNotFountError,
+                          self.driver.copy_image_to_volume,
+                          self.ctx,
+                          volume,
+                          '',
+                          '')
+
+    @mock.patch.object(BaseDriver, "_get_provider_type_name",
+                       mock.MagicMock(return_value='standard'))
+    @mock.patch.object(BaseDriver, "_get_provider_az")
+    @mock.patch.object(jacket.db.extend.api, "image_mapper_get")
+    def test_copy_image_to_volume_not_exist_image(self,
+                                                  get_image_mapper_mock,
+                                                  get_provider_az_mock):
+        '''Test copy_image_to_volume in compute_driver
+
+            for not finding provider image with input image_id
+        '''
+
+        image_id = "ami-00001"
+        snapshot = {'provider_image_id': None}
+        get_provider_az_mock.return_value = 'ap-southeast-1a'
+        get_image_mapper_mock.return_value = snapshot
+        volume = self._create_volume()
+        self.assertRaises(exception_ex.ProviderImageNotFount,
+                          self.driver.copy_image_to_volume,
+                          self.ctx,
+                          volume,
+                          '',
+                          image_id)
+
+    @mock.patch.object(BaseDriver, "_get_provider_type_name",
+                       mock.MagicMock(return_value='standard'))
+    @mock.patch.object(BaseDriver, "_get_provider_az")
+    @mock.patch.object(jacket.db.extend.api, "image_mapper_get")
+    @mock.patch.object(AwsClientPlugin, 'delete_volume')
+    @mock.patch.object(AwsClientPlugin, 'create_volume')
+    def test_copy_image_to_volume_error_on_aws(self,
+                                               create_volume_mock,
+                                               delete_volume_mock,
+                                               get_image_mapper_mock,
+                                               get_provider_az_mock):
+        '''Test copy_image_to_volume in compute_driver
+
+            for aws create failed
+        '''
+
+        image_id = "fake-uuid"
+        snapshot = {'provider_image_id': 'ami-00001'}
+
+        error_response = {'Error': {'Message': "fake",
+                                    'Code': 'IncorrectState'}}
+        operation_name = 'CreateVolume'
+        get_provider_az_mock.return_value = 'ap-southeast-1a'
+        get_image_mapper_mock.return_value = snapshot
+        create_volume_mock.side_effect = ClientError(error_response,
+                                                     operation_name)
+        delete_volume_mock.return_value = {'code': 202}
+        volume = self._create_volume()
+        self.assertRaises(exception_ex.ProviderCreateVolumeFailed,
+                          self.driver.copy_image_to_volume,
+                          self.ctx,
+                          volume,
+                          '',
+                          image_id)
+
+    @mock.patch.object(BaseDriver, "_get_provider_type_name",
+                       mock.MagicMock(return_value='standard'))
+    @mock.patch.object(BaseDriver, "_get_provider_az")
+    @mock.patch.object(jacket.db.extend.api, "image_mapper_get")
+    @mock.patch.object(jacket.db.extend.api, "volume_mapper_create")
+    @mock.patch.object(AwsClientPlugin, 'delete_volume')
+    @mock.patch.object(AwsClientPlugin, 'create_volume')
+    def test_copy_image_to_volume_error_mapper_create(self, create_volume_mock,
+                                                      delete_volume_mock,
+                                                      mapper_create_mock,
+                                                      get_image_mapper_mock,
+                                                      get_provider_az_mock):
+        '''Test copy_image_to_volume in compute_driver
+
+            for jacket create mapper failed
+        '''
+
+        image_id = "fake-uuid"
+        snapshot = {'provider_image_id': 'ami-00001'}
+        aws_response = {'VolumeId': 'aws-0001'}
+
+        get_provider_az_mock.return_value = 'ap-southeast-1a'
+        get_image_mapper_mock.return_value = snapshot
+        create_volume_mock.return_value = aws_response
+        mapper_create_mock.side_effect = \
+            exception_ex.ProviderCreateVolumeFailed
+        delete_volume_mock.return_value = {'code': 202}
+        volume = self._create_volume()
+        self.assertRaises(exception_ex.ProviderCreateVolumeFailed,
+                          self.driver.copy_image_to_volume,
+                          self.ctx,
+                          volume,
+                          '',
+                          image_id)
+
+    @mock.patch.object(BaseDriver, "_get_provider_type_name",
+                       mock.MagicMock(return_value='standard'))
+    @mock.patch.object(BaseDriver, '_get_provider_az')
+    @mock.patch.object(jacket.db.extend.api, 'image_mapper_get')
+    @mock.patch.object(jacket.db.extend.api, 'volume_mapper_create')
+    @mock.patch.object(AwsClientPlugin, 'create_volume')
+    @mock.patch.object(AwsClientPlugin, 'create_tags')
+    def test_copy_image_to_volume(self,
+                                  create_tags_mock,
+                                  create_volume_mock,
+                                  volume_mapper_create_mock,
+                                  get_image_mapper_mock,
+                                  gget_provider_az_mock):
+        '''Test copy_image_to_volume in compute_driver '''
+
+        image_id = "fake-uuid"
+        snapshot = {'provider_image_id': 'ami-00001'}
+        aws_response = {'VolumeId': 'aws-0001'}
+
+        gget_provider_az_mock.return_value = 'ap-southeast-1a'
+        get_image_mapper_mock.return_value = snapshot
+        create_volume_mock.return_value = aws_response
+        volume_mapper_create_mock.return_value = {'code': 202}
+        create_tags_mock.return_value = {'code': 202}
+        volume = self._create_volume()
+        self.driver.copy_image_to_volume(self.ctx, volume, '', image_id)

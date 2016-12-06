@@ -956,3 +956,220 @@ class AwsComputeDriverTestCase(testtools.TestCase):
             pass
         setattr(instance, 'save', _save)
         self.driver.spawn(self.context, instance, None, None, None)
+
+    def test_upload_image_not_exist_lxc_volume(self):
+        '''Test upload_image in compute_driver
+
+            for lxc volume not finding in jacket
+        '''
+
+        instance = self._create_instance(system_metadata={},
+                                         expected_attrs=['system_metadata'])
+        system_metadat = instance.system_metadata
+        system_metadat['lxc_volume_id'] = None
+        image_meta = {}
+        image_meta['id'] = 'ami-00001'
+        self.assertRaises(exception.LxcVolumeNotFound,
+                          self.driver.upload_image,
+                          self.context,
+                          instance,
+                          image_meta)
+
+    @mock.patch.object(AwsClientPlugin, 'delete_snapshot')
+    @mock.patch.object(AwsClientPlugin, 'create_snapshot')
+    def test_upload_image_error_on_aws(self,
+                                       create_snapshot_mock,
+                                       delete_snapshot_mock):
+        '''Test upload_image in compute_driver
+
+            for aws exception
+        '''
+
+        instance = self._create_instance(system_metadata={},
+                                         expected_attrs=['system_metadata'])
+        system_metadat = instance.system_metadata
+        system_metadat['lxc_volume_id'] = 'i-00001'
+        image_meta = {}
+        image_meta['id'] = 'ami-00001'
+        error_response = {'Error': {'Message': "fake",
+                                    'Code': 'IncorrectState'}}
+        operation_name = 'CreateSnapshot'
+        create_snapshot_mock.side_effect = ClientError(error_response,
+                                                       operation_name)
+        delete_snapshot_mock.return_value = {'code': 202}
+        self.assertRaises(exception_ex.ProviderCreateSnapshotFailed,
+                          self.driver.upload_image,
+                          self.context,
+                          instance,
+                          image_meta)
+
+    @mock.patch.object(jacket.db.extend.api, 'image_mapper_create')
+    @mock.patch.object(AwsClientPlugin, 'delete_snapshot')
+    @mock.patch.object(AwsClientPlugin, 'create_snapshot')
+    @mock.patch.object(AwsClientPlugin, 'create_tags')
+    def test_upload_image_error_mapper_create(self,
+                                              create_tags_mock,
+                                              create_snapshot_mock,
+                                              delete_snapshot_mock,
+                                              image_mapper_create_mock):
+        '''Test upload_image in compute_driver
+
+            for jacket creating mapper exception
+        '''
+
+        instance = self._create_instance(system_metadata={},
+                                         expected_attrs=['system_metadata'])
+        system_metadat = instance.system_metadata
+        system_metadat['lxc_volume_id'] = 'i-00001'
+        image_meta = {}
+        image_meta['id'] = 'ami-00001'
+        snapshot = {}
+        snapshot['SnapshotId'] = 's-0001'
+        create_snapshot_mock.return_value = snapshot
+        create_tags_mock.return_value = {'code': 202}
+        image_mapper_create_mock.side_effect = \
+            exception_ex.ProviderCreateSnapshotFailed
+        delete_snapshot_mock.return_value = {'code': 202}
+        self.assertRaises(exception_ex.ProviderCreateSnapshotFailed,
+                          self.driver.upload_image,
+                          self.context,
+                          instance,
+                          image_meta)
+
+    @mock.patch.object(jacket.db.extend.api, 'image_mapper_create')
+    @mock.patch.object(AwsClientPlugin, 'delete_snapshot')
+    @mock.patch.object(AwsClientPlugin, 'create_snapshot')
+    @mock.patch.object(AwsClientPlugin, 'create_tags')
+    def test_upload_image(self,
+                          create_tags_mock,
+                          create_snapshot_mock,
+                          delete_snapshot_mock,
+                          image_mapper_create_mock):
+        '''Test upload_image in compute_driver '''
+
+        instance = self._create_instance(system_metadata={},
+                                         expected_attrs=['system_metadata'])
+        system_metadat = instance.system_metadata
+        system_metadat['lxc_volume_id'] = 'i-00001'
+        image_meta = {}
+        image_meta['id'] = 'ami-00001'
+        snapshot = {}
+        snapshot['SnapshotId'] = 's-0001'
+        create_snapshot_mock.return_value = snapshot
+        create_tags_mock.return_value = {'code': 202}
+        image_mapper_create_mock.return_value = {'code': 202}
+        delete_snapshot_mock.return_value = {'code': 202}
+        self.driver.upload_image(self.context, instance, image_meta)
+
+    def test_volume_create_not_exist_size(self):
+        '''Test volume_create in compute_driver
+
+            for volume size is None exception
+        '''
+
+        instance = self._create_instance()
+        flavor = instance.get_flavor()
+        flavor.root_gb = 0
+        self.assertRaises(exception_ex.ProviderCreateVolumeFailed,
+                          self.driver.volume_create,
+                          self.context,
+                          instance)
+
+    @mock.patch.object(AwsComputeDriver, "_get_project_mapper")
+    def test_volume_create_no_availability_zone(self,
+                                                get_project_mapper_mock):
+        '''Test volume_create in compute_driver
+
+            for no availability zone exception
+        '''
+
+        instance = self._create_instance()
+        size = 1
+        project_mapper = {'availability_zone': None}
+        get_project_mapper_mock.return_value = project_mapper
+        self.assertRaises(exception_ex.AvailabilityZoneNotFountError,
+                          self.driver.volume_create,
+                          self.context,
+                          instance,
+                          size=size)
+
+    @mock.patch.object(AwsComputeDriver, "_get_project_mapper")
+    @mock.patch.object(AwsClientPlugin, 'delete_volume')
+    @mock.patch.object(AwsClientPlugin, 'create_volume')
+    def test_volume_create_error_on_aws(self,
+                                        create_volume_mock,
+                                        delete_volume_mock,
+                                        get_project_mapper_mock):
+        '''Test volume_create in compute_driver
+
+            for aws exception
+        '''
+
+        instance = self._create_instance()
+        size = 1
+        project_mapper = {'availability_zone': 'ap-southeast-1b'}
+        error_response = {'Error': {'Message': "fake",
+                                    'Code': 'IncorrectState'}}
+        operation_name = 'CreateVolume'
+        get_project_mapper_mock.return_value = project_mapper
+        create_volume_mock.side_effect = ClientError(error_response,
+                                                     operation_name)
+        delete_volume_mock.return_value = {'code': 202}
+        self.assertRaises(exception_ex.ProviderCreateVolumeFailed,
+                          self.driver.volume_create,
+                          self.context,
+                          instance,
+                          size=size)
+
+    @mock.patch.object(jacket.db.extend.api, 'volume_mapper_create')
+    @mock.patch.object(AwsComputeDriver, "_get_project_mapper")
+    @mock.patch.object(AwsClientPlugin, 'delete_volume')
+    @mock.patch.object(AwsClientPlugin, 'create_volume')
+    @mock.patch.object(AwsClientPlugin, 'create_tags')
+    def test_volume_create_error_mapper_create(self,
+                                               create_tags_mock,
+                                               create_volume_mock,
+                                               delete_volume_mock,
+                                               get_project_mapper_mock,
+                                               volume_mapper_create_mock):
+        '''Test volume_create in compute_driver
+
+            for jacket create mapper exception
+        '''
+
+        instance = self._create_instance()
+        size = 1
+        project_mapper = {'availability_zone': 'ap-southeast-1b'}
+        volume = {'VolumeId': 'vol-00001'}
+        get_project_mapper_mock.return_value = project_mapper
+        create_volume_mock.return_value = volume
+        create_tags_mock.return_value = {'code': 200}
+        volume_mapper_create_mock.side_effect = \
+            exception_ex.ProviderCreateVolumeFailed
+        delete_volume_mock.return_value = {'code': 200}
+        self.assertRaises(exception_ex.ProviderCreateVolumeFailed,
+                          self.driver.volume_create,
+                          self.context,
+                          instance,
+                          size=size)
+
+    @mock.patch.object(jacket.db.extend.api, 'volume_mapper_create')
+    @mock.patch.object(AwsComputeDriver, "_get_project_mapper")
+    @mock.patch.object(AwsClientPlugin, 'create_volume')
+    @mock.patch.object(AwsClientPlugin, 'create_tags')
+    def test_volume_create(self,
+                           create_tags_mock,
+                           create_volume_mock,
+                           get_project_mapper_mock,
+                           volume_mapper_create_mock):
+        '''Test volume_create in compute_driver '''
+
+        instance = self._create_instance()
+        size = 1
+        project_mapper = {'availability_zone': 'ap-southeast-1b'}
+        volume = {'VolumeId': 'vol-00001'}
+        get_project_mapper_mock.return_value = project_mapper
+        create_volume_mock.return_value = volume
+        create_tags_mock.return_value = {'code': 200}
+        volume_mapper_create_mock.return_value = {'code': 200}
+        self.driver.volume_create(self.context, instance, size=size)
