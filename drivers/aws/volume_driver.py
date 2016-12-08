@@ -41,12 +41,21 @@ class BaseDriver(object):
         self._aws_client = client.AwsClient()
         self.caa_db_api = caa_db_api
 
+    def _get_project_mapper(self, context, project_id=None):
+        if project_id is None:
+            project_id = 'aws_default'
+
+        project_mapper = self.caa_db_api.project_mapper_get(context,
+                                                            project_id)
+        if not project_mapper:
+            raise exception_ex.AccountNotConfig()
+        return project_mapper
+
     def _get_provider_type_name(self, context, type_id):
         provider_type = None
         try:
-            project_mapper = self.caa_db_api.project_mapper_get(
-                context,
-                context.project_id)
+            project_mapper = self._get_project_mapper(context,
+                                                      context.project_id)
             provider_type = project_mapper.get('provider_type', None)
         except exception.EntityNotFound as ex:
             LOG.error(_LE("type_mapper not found! ex = %s"), ex)
@@ -55,10 +64,8 @@ class BaseDriver(object):
     def _get_provider_az(self, context, availability_zone):
         provider_az = None
         try:
-            project_mapper = self.caa_db_api.project_mapper_get(
-                context,
-                context.project_id
-            )
+            project_mapper = self._get_project_mapper(context,
+                                                      context.project_id)
             provider_az = project_mapper.get('provider_az', None)
         except exception.EntityNotFound as ex:
             LOG.error(_LE("az_mapper not found! ex = %s"), ex)
@@ -113,12 +120,10 @@ class BaseDriver(object):
     def _create_volume(self, volume, context, new_size=None,
                        new_type=None, snapshot=None):
         provider_type = self._get_provider_type_name(
-            req_context.get_admin_context(),
-            new_type or volume.volume_type_id
+            context, new_type or volume.volume_type_id
         )
         provider_az = self._get_provider_az(
-            req_context.get_admin_context(),
-            volume.availability_zone
+            context, volume.availability_zone
         )
         if not provider_az:
             msg = (_("create provider volume failed,no provider_az vol:%s") %
